@@ -666,7 +666,7 @@
 
 <script>
 /* ============================================================
-   TRACKING v2 (Nov 2026) - shared "Miro Sounds Proposals" GA4 property,
+   TRACKING v2.1 (Nov 2026) - shared "Miro Sounds Proposals" GA4 property,
    one stream for all of go.mirosounds.com. Every event carries
    proposal_name so reports split by proposal.
    - Link-preview bots / headless browsers are not tracked.
@@ -709,14 +709,72 @@ if (!IS_BOT) {
   gtag('config', GA_MEASUREMENT_ID, cfg);
 }
 function markOwnerDevice(name, company){
-  if (!isOwner(name, company)) return;
-  try { localStorage.setItem('miro_internal','1'); } catch(e){}
-  gtag('set', { traffic_type: 'internal' });
+  if (isOwner(name, company)) {
+    try { localStorage.setItem('miro_internal','1'); } catch(e){}
+    gtag('set', { traffic_type: 'internal' });
+  }
+  startVisit();
 }
+
+/* ---- visitor activity log -> "Activity" tab of the leads sheet ----
+   Named visitors only (people who passed the lead gate). Never logs bots or
+   Rory's own devices. One row per: proposal opened, artist scrolled into
+   view (once per artist per visit), video played, artist profile opened,
+   and time on page when they leave. */
+const ACTIVITY_EVENTS = { artist_section_view:'Viewed artist', artist_video_click:'Played video', artist_profile_click:'Opened artist profile' };
+const _activitySeen = {};
+const _pendingViews = [];
+let _visitStarted = false, _visibleMs = 0, _visibleSince = 0, _leaveSent = false;
+function ownerDevice(){ try { return localStorage.getItem('miro_internal') === '1'; } catch(e){ return false; } }
+function visitorInfo(){
+  try {
+    const d = JSON.parse(localStorage.getItem(LEAD_STORAGE_KEY) || 'null');
+    if (d) return { name: [d.firstName, d.lastName].filter(Boolean).join(' '), business: d.business || '' };
+  } catch(e){}
+  return null;
+}
+function logActivity(label, artist, detail, keepalive){
+  if (IS_BOT || ownerDevice()) return;
+  const v = visitorInfo();
+  if (!v || !v.name) { if (label === 'Viewed artist') _pendingViews.push(artist); return; }
+  const key = label + '|' + (artist || '') + '|' + (detail || '');
+  if (label !== 'Left page' && _activitySeen[key]) return;
+  _activitySeen[key] = 1;
+  const payload = { type:'activity', proposal: PROPOSAL_NAME, visitor_name: v.name, business: v.business, event: label, artist: artist || '', detail: detail || '', ts: Date.now() };
+  try {
+    fetch(SUBMIT_ENDPOINT, { method:'POST', mode:'no-cors', keepalive: !!keepalive, headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(payload) }).catch(function(){});
+  } catch(e){}
+}
+function startVisit(){
+  if (_visitStarted || document.documentElement.dataset.status === 'hold') return;
+  if (!visitorInfo()) return;
+  _visitStarted = true;
+  _visibleSince = document.visibilityState === 'visible' ? Date.now() : 0;
+  logActivity('Opened proposal', '', document.referrer ? 'from ' + document.referrer.split('/')[2] : '');
+  _pendingViews.splice(0).forEach(function(a){ logActivity('Viewed artist', a, ''); });
+  function leave(){
+    if (_visibleSince) { _visibleMs += Date.now() - _visibleSince; _visibleSince = 0; }
+    if (_leaveSent || _visibleMs < 5000) return;
+    _leaveSent = true;
+    const mins = _visibleMs / 60000;
+    logActivity('Left page', '', (mins < 1 ? Math.round(_visibleMs/1000) + ' sec' : mins.toFixed(1) + ' min') + ' on page', true);
+  }
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'hidden') leave();
+    else { _visibleSince = Date.now(); _leaveSent = false; }
+  });
+  window.addEventListener('pagehide', leave);
+}
+document.addEventListener('DOMContentLoaded', function(){ startVisit(); });
 
 function trackEvent(name, params){
   if (IS_BOT) return;
-  gtag('event', name, Object.assign({ proposal_name: PROPOSAL_NAME }, params || {}));
+  params = params || {};
+  gtag('event', name, Object.assign({ proposal_name: PROPOSAL_NAME }, params));
+  if (ACTIVITY_EVENTS[name]) {
+    const artist = String(params.artist_name || '').replace(/&amp;/g,'&');
+    logActivity(ACTIVITY_EVENTS[name], artist, params.video_label || '');
+  }
 }
 
 /* ============================================================
@@ -843,7 +901,7 @@ const ARTISTS_BANDS = [
     image: IMG_ELSIE,
     ig:'elsiefranklinblues',
     desc:'Bringing a spirited, all-acoustic take on early American blues, Elsie Franklin &amp; The Rockettes blend country blues, ragtime and jazz with driving rhythms and infectious energy. Led by Elsie&rsquo;s distinctive vocals and resonator guitar, the all-female trio combines double bass and washboard percussion to create a raw, rootsy sound inspired by the likes of Memphis Minnie and Bessie Smith.',
-    format:'Trio standard, solo available.',
+    format:'Trio standard, quartet available.',
     feeLabel:'All Inclusive Fee',
     fee:'&pound;2,750 - &pound;3,250 + VAT',
     note:'Availability Not Yet Confirmed',
